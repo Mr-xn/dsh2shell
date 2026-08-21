@@ -262,7 +262,8 @@ def main():
 
     import os
     os.makedirs(a.log_dir, exist_ok=True)
-    logname = re.sub(r"[^A-Za-z0-9]+", "_", a.target).strip("_") + ".log"
+    logname = (re.sub(r"[^A-Za-z0-9]+", "_", a.target).strip("_")
+               + time.strftime("_%Y%m%d-%H%M%S") + ".log")
     logf = open(os.path.join(a.log_dir, logname), "w")
 
     class Tee:
