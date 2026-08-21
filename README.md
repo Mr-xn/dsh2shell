@@ -1,5 +1,7 @@
 # dsh2shell
 
+![demo](demo.png)
+
 Unauthenticated RCE PoC for exposed DeepSeek Harness (dsh) web instances.
 
 **Principle**: spoofing the `Host` header unlocks dsh's privileged RPC methods, which lets the PoC point the target's LLM provider at its own built-in fake model server and drive the agent's bash tool with attacker-chosen commands — no real model or valid API key needed.
