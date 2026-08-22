@@ -1316,11 +1316,10 @@ def tee_stdout_to(log_dir, name):
             sys.__stdout__.flush()
             logf.flush()
 
-        def isatty(self):
-            return sys.__stdout__.isatty()
-
-        def fileno(self):
-            return sys.__stdout__.fileno()
+        # Anything not defined here (encoding, writable(), future callers)
+        # delegates to the real stdout.
+        def __getattr__(self, name):
+            return getattr(sys.__stdout__, name)
 
     sys.stdout = Tee()
 
