@@ -65,6 +65,8 @@ Options:
 | `--shell` | Open a reverse shell against one explicit target |
 | `--cmd "CMD"` | Run a command non-interactively (repeatable) |
 | `--no-cleanup` | Leave the attack session and config changes in place |
+| `--no-log` | Disable run logging |
+| `--log-dir dir` | Directory for timestamped run logs (default `dsh2shell_logs`; always on unless `--no-log`) |
 | `-t, --target URL` | Explicit target URL |
 | `--lhost address` | Callback address reachable from the target |
 | `--shell-port port` | Reverse-shell port (default `4444`) |

@@ -1231,6 +1231,12 @@ def parse_args():
         action="store_true",
         help="keep the session folder and skip the state restore pass",
     )
+    parser.add_argument(
+        "--no-log", action="store_true", help="disable run logging"
+    )
+    parser.add_argument(
+        "--log-dir", default="dsh2shell_logs", help="directory for timestamped run logs"
+    )
     parser.add_argument("-t", "--target", help="explicit DSH base URL")
     parser.add_argument(
         "--lhost", help="address reachable from target (auto-detected by default)"
@@ -1289,9 +1295,42 @@ def parse_args():
     return args
 
 
+def tee_stdout_to(log_dir, name):
+    """Mirror stdout to a timestamped log file with ANSI codes stripped."""
+    os.makedirs(log_dir, exist_ok=True)
+    logname = (
+        re.sub(r"[^A-Za-z0-9]+", "_", name or "fofa").strip("_")
+        + time.strftime("_%Y%m%d-%H%M%S")
+        + ".log"
+    )
+    logf = open(os.path.join(log_dir, logname), "w", encoding="utf-8")
+    ansi = re.compile(r"\033\[[0-9;]*m")
+
+    class Tee:
+        def write(self, s):
+            sys.__stdout__.write(s)
+            logf.write(ansi.sub("", s))
+            logf.flush()
+
+        def flush(self):
+            sys.__stdout__.flush()
+            logf.flush()
+
+        def isatty(self):
+            return sys.__stdout__.isatty()
+
+        def fileno(self):
+            return sys.__stdout__.fileno()
+
+    sys.stdout = Tee()
+
+
 if __name__ == "__main__":
     try:
-        raise SystemExit(run(parse_args()))
+        _args = parse_args()
+        if not _args.no_log:
+            tee_stdout_to(_args.log_dir, _args.target)
+        raise SystemExit(run(_args))
     except KeyboardInterrupt:
         print("\n[-] interrupted", file=sys.stderr)
         raise SystemExit(130)
